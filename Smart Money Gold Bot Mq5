@@ -1,0 +1,124 @@
+#property strict
+#property version "1.00"
+#property description "SMC Gold BOS Expert Advisor"
+
+#include <Trade/Trade.mqh>
+CTrade trade;
+
+input ENUM_TIMEFRAMES SignalTF = PERIOD_M15;
+input int SwingLookback = 5;
+input int StopLookback = 10;
+input double RiskPercent = 0.5;
+input double RiskReward = 3.0;
+input bool EnableTrading = false;
+input ulong MagicNumber = 20261124;
+
+datetime lastBar = 0;
+
+double CalculateLot(double entry, double sl)
+{
+   double risk = AccountInfoDouble(ACCOUNT_BALANCE)
+                 * RiskPercent / 100.0;
+
+   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+
+   if(tickSize <= 0 || tickValue <= 0 || step <= 0)
+      return 0;
+
+   double loss = MathAbs(entry - sl) / tickSize * tickValue;
+   if(loss <= 0) return 0;
+
+   double lots = risk / loss;
+   lots = MathFloor(lots / step) * step;
+
+   if(lots < minLot) return 0;
+
+   return MathMin(lots, maxLot);
+}
+
+void OnTick()
+{
+   datetime bar = iTime(_Symbol, SignalTF, 0);
+
+   if(bar == 0 || bar == lastBar)
+      return;
+
+   lastBar = bar;
+
+   if(Bars(_Symbol, SignalTF) < StopLookback + SwingLookback + 5)
+      return;
+
+   int hi = iHighest(_Symbol, SignalTF, MODE_HIGH, SwingLookback, 2);
+   int lo = iLowest(_Symbol, SignalTF, MODE_LOW, SwingLookback, 2);
+   int slLo = iLowest(_Symbol, SignalTF, MODE_LOW, StopLookback, 1);
+   int slHi = iHighest(_Symbol, SignalTF, MODE_HIGH, StopLookback, 1);
+
+   if(hi < 0 || lo < 0 || slLo < 0 || slHi < 0)
+      return;
+
+   double previousHigh = iHigh(_Symbol, SignalTF, hi);
+   double previousLow = iLow(_Symbol, SignalTF, lo);
+
+   double close1 = iClose(_Symbol, SignalTF, 1);
+   double close2 = iClose(_Symbol, SignalTF, 2);
+
+   bool bullishBOS = close1 > previousHigh && close2 <= previousHigh;
+   bool bearishBOS = close1 < previousLow && close2 >= previousLow;
+
+   if(!bullishBOS && !bearishBOS)
+      return;
+
+   Print("SMC GOLD: ", bullishBOS ? "BULLISH BOS" : "BEARISH BOS");
+
+   if(!EnableTrading)
+      return;
+
+   if(PositionSelect(_Symbol))
+      return;
+
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol, tick))
+      return;
+
+   double entry, sl, tp, lots;
+
+   if(bullishBOS)
+   {
+      entry = tick.ask;
+      sl = iLow(_Symbol, SignalTF, slLo);
+
+      if(sl >= entry) return;
+
+      tp = entry + (entry - sl) * RiskReward;
+   }
+   else
+   {
+      entry = tick.bid;
+      sl = iHigh(_Symbol, SignalTF, slHi);
+
+      if(sl <= entry) return;
+
+      tp = entry - (sl - entry) * RiskReward;
+   }
+
+   lots = CalculateLot(entry, sl);
+   if(lots <= 0) return;
+
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetTypeFillingBySymbol(_Symbol);
+
+   if(bullishBOS)
+      trade.Buy(lots, _Symbol, 0, sl, tp, "SMC Bullish BOS");
+   else
+      trade.Sell(lots, _Symbol, 0, sl, tp, "SMC Bearish BOS");
+}
+
+int OnInit()
+{
+   trade.SetExpertMagicNumber(MagicNumber);
+   return INIT_SUCCEEDED;
+}
